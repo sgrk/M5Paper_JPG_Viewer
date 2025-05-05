@@ -27,12 +27,16 @@ const char* DIRECTORY_PATH = "/";  // Root directory of SD card
 const int MAX_FILES = 100;         // Maximum number of files to scan
 const bool SCAN_SUBDIRECTORIES = true; // Whether to scan subdirectories
 const int STATUS_BAR_HEIGHT = 40;  // Height of the status bar in pixels
+const int AUTO_ADVANCE_INTERVAL = 10000; // Time in milliseconds between auto-advances (10 seconds)
 
 // Global variables
 String jpgFiles[MAX_FILES];        // Array to store JPG file paths
+bool AUTO_ADVANCE = true;    // Whether to automatically advance to next image
 int fileCount = 0;                 // Number of JPG files found
 int currentFileIndex = 0;          // Index of currently displayed file
 unsigned long lastButtonPress = 0; // Time of last button press for debouncing
+unsigned long lastImageChange = 0; // Time of last image change for auto-advance
+
 
 void setup() {
   // Initialize serial for debugging
@@ -86,6 +90,7 @@ void loop() {
       // Previous image
       Serial.println("Left button pressed - showing previous image");
       lastButtonPress = currentTime;
+      lastImageChange = currentTime;  // Reset auto-advance timer
       currentFileIndex = (currentFileIndex > 0) ? currentFileIndex - 1 : fileCount - 1;
       displayImage(jpgFiles[currentFileIndex]);
     }
@@ -94,19 +99,47 @@ void loop() {
       // Next image
       Serial.println("Right button pressed - showing next image");
       lastButtonPress = currentTime;
+      lastImageChange = currentTime;  // Reset auto-advance timer
       currentFileIndex = (currentFileIndex < fileCount - 1) ? currentFileIndex + 1 : 0;
       displayImage(jpgFiles[currentFileIndex]);
     }
     
     if (M5.BtnP.wasPressed()) {
-      // Middle button - toggle refresh mode or other function
-      Serial.println("Middle button pressed");
+      // Middle button - toggle auto-advance
+      Serial.println("Middle button pressed - toggling auto-advance");
       lastButtonPress = currentTime;
-      // You can add additional functionality here
+      toggleAutoAdvance();
     }
   }
   
+  // Auto-advance to next image if enabled and interval has passed
+  if (AUTO_ADVANCE && (currentTime - lastImageChange >= AUTO_ADVANCE_INTERVAL) && fileCount > 0) {
+    Serial.println("Auto-advancing to next image");
+    lastImageChange = currentTime;
+    currentFileIndex = (currentFileIndex < fileCount - 1) ? currentFileIndex + 1 : 0;
+    displayImage(jpgFiles[currentFileIndex]);
+  }
+  
   delay(50);  // Small delay for power efficiency
+}
+
+// Toggle auto-advance feature
+void toggleAutoAdvance() {
+  AUTO_ADVANCE = !AUTO_ADVANCE;
+  Serial.printf("Auto-advance %s\n", AUTO_ADVANCE ? "enabled" : "disabled");
+  
+  // Show status message
+  statusBar.fillCanvas(0xFFFF);
+  statusBar.drawString("Auto-advance: " + String(AUTO_ADVANCE ? "ON" : "OFF"), 10, 10);
+  statusBar.pushCanvas(0, 960 - STATUS_BAR_HEIGHT, UPDATE_MODE_DU);
+  
+  // Reset timer
+  lastImageChange = millis();
+  
+  // Restore status bar after a brief delay
+  delay(1000);
+  updateStatusBar(jpgFiles[currentFileIndex]);
+  statusBar.pushCanvas(0, 960 - STATUS_BAR_HEIGHT, UPDATE_MODE_DU);
 }
 
 // Show startup screen with logo and info
@@ -205,15 +238,11 @@ void displayImage(String filePath) {
   canvas.fillCanvas(0xFFFF);
   statusBar.fillCanvas(0xFFFF);
   
-  // Show loading message
-  canvas.drawString("Loading: " + filePath, 20, 20);
-  canvas.pushCanvas(0, 0, UPDATE_MODE_DU);
-  
-  
+
   // Try to draw the JPG file
   // Note: The M5EPD library doesn't support direct rotation of JPG files
   // We'll need to use the M5EPD.SetRotation() method instead
-  success = canvas.drawJpgFile(SD, filePath.c_str());
+  bool success = canvas.drawJpgFile(SD, filePath.c_str());
   
   if (!success) {
     Serial.println("Failed to draw JPG file");
@@ -224,7 +253,7 @@ void displayImage(String filePath) {
     return;
   }
   
-  // Update the status bar with file info and battery level
+  // Update the status bar with file info, battery level, and auto-advance status
   updateStatusBar(filePath);
   
   // Push image to display with high quality refresh
@@ -256,6 +285,11 @@ void updateStatusBar(String filePath) {
   // Display file info
   statusBar.drawString(fileName, 10, 10);
   statusBar.drawString(String(currentFileIndex + 1) + "/" + String(fileCount), 450, 10);
+  
+  // Display auto-advance status
+  if (AUTO_ADVANCE) {
+    statusBar.drawString("Auto", 200, 10);
+  }
   
   // Get and display battery info
   uint32_t vol = M5.getBatteryVoltage();
