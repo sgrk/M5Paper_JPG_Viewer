@@ -69,8 +69,11 @@ void setup() {
   }
   Serial.println("SD Card initialized successfully");
   
-  // Scan for JPG files
+// Scan for JPG files
   scanJpgFiles();
+  
+  // Check if auto-advance should be disabled based on conditions
+  checkAutoAdvanceConditions();
   
   // Display first image if available
   if (fileCount > 0) {
@@ -112,8 +115,13 @@ void loop() {
     }
   }
   
+  // Check auto-advance conditions periodically
+  if (currentTime % 30000 == 0) { // Check every 30 seconds
+    checkAutoAdvanceConditions();
+  }
+  
   // Auto-advance to next image if enabled and interval has passed
-  if (AUTO_ADVANCE && (currentTime - lastImageChange >= AUTO_ADVANCE_INTERVAL) && fileCount > 0) {
+  if (AUTO_ADVANCE && (currentTime - lastImageChange >= AUTO_ADVANCE_INTERVAL) && fileCount > 1) {
     Serial.println("Auto-advancing to next image");
     lastImageChange = currentTime;
     currentFileIndex = (currentFileIndex < fileCount - 1) ? currentFileIndex + 1 : 0;
@@ -123,15 +131,83 @@ void loop() {
   delay(50);  // Small delay for power efficiency
 }
 
+// Check if auto-advance should be disabled based on conditions
+void checkAutoAdvanceConditions() {
+  bool previousState = AUTO_ADVANCE;
+  String disableReason = "";
+  
+  // Get battery level
+  uint32_t vol = M5.getBatteryVoltage();
+  int batteryLevel = map(vol, 3300, 4350, 0, 100);
+  batteryLevel = constrain(batteryLevel, 0, 100);
+  
+  // Check battery level - disable if below 20%
+  if (batteryLevel < 20) {
+    AUTO_ADVANCE = false;
+    disableReason = "Low battery";
+    Serial.println("Auto-advance disabled due to low battery");
+  }
+  
+  // Check number of images - disable if only one image
+  else if (fileCount <= 1) {
+    AUTO_ADVANCE = false;
+    disableReason = "Only one image";
+    Serial.println("Auto-advance disabled due to only one image");
+  }
+  
+  // If conditions are met and auto-advance was previously disabled by conditions, re-enable it
+  else if (!previousState) {
+    AUTO_ADVANCE = true;
+    Serial.println("Auto-advance re-enabled as conditions are now met");
+  }
+  
+  // If state changed, update the status bar
+  if (previousState != AUTO_ADVANCE && fileCount > 0) {
+    // Show status message
+    statusBar.fillCanvas(0xFFFF);
+    if (!AUTO_ADVANCE && disableReason.length() > 0) {
+      statusBar.drawString("Auto-advance OFF: " + disableReason, 10, 10);
+    } else {
+      statusBar.drawString("Auto-advance: " + String(AUTO_ADVANCE ? "ON" : "OFF"), 10, 10);
+    }
+    statusBar.pushCanvas(0, 960 - STATUS_BAR_HEIGHT, UPDATE_MODE_DU);
+    
+    // Restore status bar after a brief delay
+    delay(1000);
+    updateStatusBar(jpgFiles[currentFileIndex]);
+    statusBar.pushCanvas(0, 960 - STATUS_BAR_HEIGHT, UPDATE_MODE_DU);
+  }
+}
+
 // Toggle auto-advance feature
 void toggleAutoAdvance() {
-  AUTO_ADVANCE = !AUTO_ADVANCE;
-  Serial.printf("Auto-advance %s\n", AUTO_ADVANCE ? "enabled" : "disabled");
+  // Only toggle if conditions allow
+  uint32_t vol = M5.getBatteryVoltage();
+  int batteryLevel = map(vol, 3300, 4350, 0, 100);
+  batteryLevel = constrain(batteryLevel, 0, 100);
   
-  // Show status message
-  statusBar.fillCanvas(0xFFFF);
-  statusBar.drawString("Auto-advance: " + String(AUTO_ADVANCE ? "ON" : "OFF"), 10, 10);
-  statusBar.pushCanvas(0, 960 - STATUS_BAR_HEIGHT, UPDATE_MODE_DU);
+  if (batteryLevel < 20) {
+    // Show message that auto-advance can't be enabled due to low battery
+    statusBar.fillCanvas(0xFFFF);
+    statusBar.drawString("Can't enable: Low battery", 10, 10);
+    statusBar.pushCanvas(0, 960 - STATUS_BAR_HEIGHT, UPDATE_MODE_DU);
+  }
+  else if (fileCount <= 1) {
+    // Show message that auto-advance can't be enabled due to only one image
+    statusBar.fillCanvas(0xFFFF);
+    statusBar.drawString("Can't enable: Only one image", 10, 10);
+    statusBar.pushCanvas(0, 960 - STATUS_BAR_HEIGHT, UPDATE_MODE_DU);
+  }
+  else {
+    // Toggle auto-advance
+    AUTO_ADVANCE = !AUTO_ADVANCE;
+    Serial.printf("Auto-advance %s\n", AUTO_ADVANCE ? "enabled" : "disabled");
+    
+    // Show status message
+    statusBar.fillCanvas(0xFFFF);
+    statusBar.drawString("Auto-advance: " + String(AUTO_ADVANCE ? "ON" : "OFF"), 10, 10);
+    statusBar.pushCanvas(0, 960 - STATUS_BAR_HEIGHT, UPDATE_MODE_DU);
+  }
   
   // Reset timer
   lastImageChange = millis();
@@ -286,15 +362,21 @@ void updateStatusBar(String filePath) {
   statusBar.drawString(fileName, 10, 10);
   statusBar.drawString(String(currentFileIndex + 1) + "/" + String(fileCount), 450, 10);
   
-  // Display auto-advance status
-  if (AUTO_ADVANCE) {
-    statusBar.drawString("Auto", 200, 10);
-  }
-  
-  // Get and display battery info
+  // Get battery info once
   uint32_t vol = M5.getBatteryVoltage();
   int batteryLevel = map(vol, 3300, 4350, 0, 100);
   batteryLevel = constrain(batteryLevel, 0, 100);
+  
+  // Display auto-advance status with reason if disabled
+  if (AUTO_ADVANCE) {
+    statusBar.drawString("Auto", 200, 10);
+  }
+  else if (batteryLevel < 20) {
+    statusBar.drawString("Auto OFF (Battery)", 150, 10);
+  }
+  else if (fileCount <= 1) {
+    statusBar.drawString("Auto OFF (1 Image)", 150, 10);
+  }
   
   // Draw battery icon
   int batteryX = 350;
