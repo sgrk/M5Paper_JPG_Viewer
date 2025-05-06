@@ -36,6 +36,9 @@ int fileCount = 0;                 // Number of JPG files found
 int currentFileIndex = 0;          // Index of currently displayed file
 unsigned long lastButtonPress = 0; // Time of last button press for debouncing
 unsigned long lastImageChange = 0; // Time of last image change for auto-advance
+unsigned long autoAdvanceOffTime = 0; // Time when AUTO_ADVANCE was turned off
+const unsigned long SLEEP_TIMEOUT = 60000; // Time in milliseconds before sleep (1 minute)
+bool sleepTimerActive = false;    // Whether the sleep timer is active
 
 
 void setup() {
@@ -89,11 +92,12 @@ void loop() {
   // Button handling for navigation with debounce
   unsigned long currentTime = millis();
   if (currentTime - lastButtonPress > 500) {  // 500ms debounce
+    bool buttonPressed = false;
+    
     if (M5.BtnL.wasPressed()) {
       // Previous image
       Serial.println("Left button pressed - showing previous image");
-      lastButtonPress = currentTime;
-      lastImageChange = currentTime;  // Reset auto-advance timer
+      buttonPressed = true;
       currentFileIndex = (currentFileIndex > 0) ? currentFileIndex - 1 : fileCount - 1;
       displayImage(jpgFiles[currentFileIndex]);
     }
@@ -101,8 +105,7 @@ void loop() {
     if (M5.BtnR.wasPressed()) {
       // Next image
       Serial.println("Right button pressed - showing next image");
-      lastButtonPress = currentTime;
-      lastImageChange = currentTime;  // Reset auto-advance timer
+      buttonPressed = true;
       currentFileIndex = (currentFileIndex < fileCount - 1) ? currentFileIndex + 1 : 0;
       displayImage(jpgFiles[currentFileIndex]);
     }
@@ -110,8 +113,19 @@ void loop() {
     if (M5.BtnP.wasPressed()) {
       // Middle button - toggle auto-advance
       Serial.println("Middle button pressed - toggling auto-advance");
-      lastButtonPress = currentTime;
+      buttonPressed = true;
       toggleAutoAdvance();
+    }
+    
+    if (buttonPressed) {
+      lastButtonPress = currentTime;
+      lastImageChange = currentTime;  // Reset auto-advance timer
+      
+      // Reset sleep timer if active
+      if (sleepTimerActive && !AUTO_ADVANCE) {
+        autoAdvanceOffTime = currentTime;
+        Serial.println("Sleep timer reset - device will sleep in 1 minute of inactivity");
+      }
     }
   }
   
@@ -126,6 +140,28 @@ void loop() {
     lastImageChange = currentTime;
     currentFileIndex = (currentFileIndex < fileCount - 1) ? currentFileIndex + 1 : 0;
     displayImage(jpgFiles[currentFileIndex]);
+  }
+  
+  // Check if sleep timer is active and timeout has been reached
+  if (sleepTimerActive && !AUTO_ADVANCE && (currentTime - autoAdvanceOffTime >= SLEEP_TIMEOUT)) {
+    Serial.println("Sleep timeout reached - putting device to sleep");
+    
+    // Show sleep message on status bar
+    statusBar.fillCanvas(0xFFFF);
+    statusBar.drawString("Device sleeping - Press any button to wake", 10, 10);
+    statusBar.pushCanvas(0, 960 - STATUS_BAR_HEIGHT, UPDATE_MODE_DU);
+    
+    // Wait for the status message to be displayed
+    delay(1000);
+    
+    // Put the device to sleep while maintaining the display
+    // M5.shutdown() would turn off the display, so we use M5.disableEXTPower() instead
+    M5.disableEXTPower();
+    esp_sleep_enable_ext0_wakeup(GPIO_NUM_38, 0); // Wake on touch
+    esp_sleep_enable_ext1_wakeup(GPIO_SEL_37 | GPIO_SEL_39, ESP_EXT1_WAKEUP_ANY_HIGH); // Wake on buttons
+    esp_deep_sleep_start();
+    
+    // Code will resume from setup() after waking up
   }
   
   delay(50);  // Small delay for power efficiency
@@ -143,6 +179,12 @@ void checkAutoAdvanceConditions() {
   
   // Check battery level - disable if below 20%
   if (batteryLevel < 20) {
+    if (AUTO_ADVANCE) {
+      // Only activate sleep timer if AUTO_ADVANCE is being turned off now
+      autoAdvanceOffTime = millis();
+      sleepTimerActive = true;
+      Serial.println("Sleep timer activated - device will sleep in 1 minute");
+    }
     AUTO_ADVANCE = false;
     disableReason = "Low battery";
     Serial.println("Auto-advance disabled due to low battery");
@@ -150,6 +192,12 @@ void checkAutoAdvanceConditions() {
   
   // Check number of images - disable if only one image
   else if (fileCount <= 1) {
+    if (AUTO_ADVANCE) {
+      // Only activate sleep timer if AUTO_ADVANCE is being turned off now
+      autoAdvanceOffTime = millis();
+      sleepTimerActive = true;
+      Serial.println("Sleep timer activated - device will sleep in 1 minute");
+    }
     AUTO_ADVANCE = false;
     disableReason = "Only one image";
     Serial.println("Auto-advance disabled due to only one image");
@@ -202,6 +250,15 @@ void toggleAutoAdvance() {
     // Toggle auto-advance
     AUTO_ADVANCE = !AUTO_ADVANCE;
     Serial.printf("Auto-advance %s\n", AUTO_ADVANCE ? "enabled" : "disabled");
+    
+    // If auto-advance is turned off, start the sleep timer
+    if (!AUTO_ADVANCE) {
+      autoAdvanceOffTime = millis();
+      sleepTimerActive = true;
+      Serial.println("Sleep timer activated - device will sleep in 1 minute");
+    } else {
+      sleepTimerActive = false;
+    }
     
     // Show status message
     statusBar.fillCanvas(0xFFFF);
@@ -372,10 +429,13 @@ void updateStatusBar(String filePath) {
     statusBar.drawString("Auto", 200, 10);
   }
   else if (batteryLevel < 20) {
-    statusBar.drawString("Auto OFF (Battery)", 150, 10);
+    statusBar.drawString("Auto OFF (Battery) - Sleep in 1m", 100, 10);
   }
   else if (fileCount <= 1) {
-    statusBar.drawString("Auto OFF (1 Image)", 150, 10);
+    statusBar.drawString("Auto OFF (1 Image) - Sleep in 1m", 100, 10);
+  }
+  else if (!AUTO_ADVANCE) {
+    statusBar.drawString("Auto OFF - Sleep in 1m", 150, 10);
   }
   
   // Draw battery icon
